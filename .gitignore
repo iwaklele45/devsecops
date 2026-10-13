@@ -26,6 +26,7 @@ env/
 decode_images.py
 extract_pdf_images.py
 update_markdown_images.py
+AGENTS.md
 
 
 # Laporan praktikum draft
@@ -36,9 +37,5 @@ praktikum/prak-bab-04.md
 praktikum/perkuliahan 8 sep 2026.md
 ringkasan-uts-bab1-6.md
 
-
-# Utility scripts
-decode_images.py
-extract_pdf_images.py
 
 
