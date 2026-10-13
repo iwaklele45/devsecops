@@ -1,0 +1,37 @@
+# OS & Editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Environment & Secrets
+.env
+*.env
+!*.env.example
+*.key
+*.pem
+*.crt
+
+# DB Dumps & Archives
+*.dump
+*.tar.gz
+
+# Python & Build artifacts
+__pycache__/
+*.pyc
+.venv/
+env/
+
+# Local logs & temp
+*.log
+
+# Laporan praktikum draft
+praktikum/prak-bab-01.md
+praktikum/prak-bab-02.md
+praktikum/prak-bab-03.md
+praktikum/prak-bab-04.md
+praktikum/perkuliahan 8 sep 2026.md
+ringkasan-uts-bab1-6.md
+
+
+AGENTS.md
