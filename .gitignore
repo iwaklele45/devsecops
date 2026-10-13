@@ -22,8 +22,11 @@ __pycache__/
 .venv/
 env/
 
-# Local logs & temp
-*.log
+# Utility scripts
+decode_images.py
+extract_pdf_images.py
+update_markdown_images.py
+
 
 # Laporan praktikum draft
 praktikum/prak-bab-01.md
