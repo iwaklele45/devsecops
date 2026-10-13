@@ -1,22 +1,3 @@
-**LAPORAN PRAKTIKUM DEVSECOPS**  
-**KELOMPOK 3**
-
-**![Logo PENS](./assets/bab-6/image1.png)**
-
-Nama			: Muhammad Rafi Putra Hidayat  
-			  Hafidz Kurnia Darojad  
-			  Indra Rahmat Maulidi  
-			  Moh Iqbal Triwijaya  
-NRP			: 3124600009  
-			  3124600015  
-			  3124600017  
-			  3126640015  
-Dosen Pengajar	: Ferry Astika Saputra, ST., M.Sc
-
-**PROGRAM STUDI D4 TEKNIK INFORMATIKA**  
-**POLITEKNIK ELEKTRONIKA NEGERI SURABAYA (PENS)**   
-**TAHUN 2026**
-
 > **Lampiran Dokumen PDF:** [LAPORAN DevSecOps BAB-6.pdf](./docker-lab/bab-6/LAPORAN%20DevSecOps%20BAB-6.pdf)
 
 <object data="./docker-lab/bab-6/LAPORAN%20DevSecOps%20BAB-6.pdf" type="application/pdf" width="100%" height="600px">
