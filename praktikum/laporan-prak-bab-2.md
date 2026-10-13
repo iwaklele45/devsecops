@@ -1,20 +1,3 @@
-**LAPORAN DevSecOps**  
-**KELOMPOK 3 \- Lab 2 VM \- Ubuntu 24.04.3 LTS**
-
-**![Logo PENS](./assets/bab-2/image1.png)**
-
-Nama			: Muhammad Rafi Putra Hidayat  
-			  Hafidz Kurnia Darojad  
-			  Indra Rahmat Maulidi  
-NRP			: 3124600009  
-			  3124600015  
-			  3124600017  
-Dosen Pengajar	: Ferry Astika Saputra, ST., M.Sc
-
-**PROGRAM STUDI D4 TEKNIK INFORMATIKA**  
-**POLITEKNIK ELEKTRONIKA NEGERI SURABAYA (PENS)**   
-**TAHUN 2026**
-
 > **Lampiran Dokumen PDF:** [LAPORAN DevSecOps BAB-2.pdf](./docker-lab/bab-2/LAPORAN%20DevSecOps%20BAB-2.pdf)
 
 <object data="./docker-lab/bab-2/LAPORAN%20DevSecOps%20BAB-2.pdf" type="application/pdf" width="100%" height="600px">
