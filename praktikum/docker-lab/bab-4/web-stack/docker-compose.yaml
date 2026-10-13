@@ -1,0 +1,22 @@
+services:
+  proxy:
+    image: nginx:alpine
+    ports:
+      - "8080:80"
+      - "8443:443"
+    volumes:
+      - ./nginx/conf:/etc/nginx/conf.d:ro
+      - ./certs:/etc/nginx/certs:ro
+      - ./logs/nginx:/var/log/nginx
+    networks: [web-net]
+    depends_on: [apache-web, flask-app]
+  apache-web:
+    image: httpd:2.4-alpine
+    volumes:
+      - ./apache/sites:/usr/local/apache2/htdocs:ro
+    networks: [web-net]
+  flask-app:
+    build: ./app
+    networks: [web-net]
+networks:
+  web-net:
