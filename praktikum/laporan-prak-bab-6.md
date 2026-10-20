@@ -8,14 +8,23 @@
 
 \[ \] Fluent Bit menerima log dari minimal tiga container.  
 ![Screenshot image2](./assets/bab-6/image2.png)  
+**Penjelasan:** Fluent Bit berperan sebagai collector yang menerima log dari container aplikasi melalui input (misalnya forward/tail). Pada screenshot terlihat log masuk dari lebih dari tiga container, yang membuktikan pipeline pengumpulan log terpusat sudah berjalan.
+
 \[ \] Tabel logs.fluentbit berisi data dengan tag, time, dan data JSONB.  
 ![Screenshot image3](./assets/bab-6/image3.png)  
+**Penjelasan:** Fluent Bit menulis log ke PostgreSQL melalui output pgsql. Kolom `tag` menunjukkan sumber log, `time` menunjukkan waktu kejadian, dan `data` bertipe JSONB menyimpan isi log dalam bentuk terstruktur sehingga bisa di-query per field.
+
 \[ \] View recent\_logs menampilkan log terbaru.  
 ![Screenshot image4](./assets/bab-6/image4.png)  
+**Penjelasan:** View `recent_logs` adalah query tersimpan yang menampilkan log terbaru dengan urutan waktu menurun. View ini memudahkan pemantauan tanpa harus menulis ulang query yang sama.
+
 \[ \] Query distribusi per tag dan pencarian keyword berjalan.  
 ![Screenshot image5](./assets/bab-6/image5.png)  
+**Penjelasan:** Query `GROUP BY tag` menunjukkan jumlah log tiap container, sehingga terlihat service mana yang paling aktif. Pencarian keyword (misalnya `ILIKE` atau operator JSONB) membuktikan log terstruktur bisa dicari secara spesifik, misalnya untuk menemukan error.
+
 \[ \] Mahasiswa memahami apa yang terjadi jika collector mati sementara.  
 ![Screenshot image6](./assets/bab-6/image6.png)
+**Penjelasan:** Saat PostgreSQL dihentikan, Fluent Bit tidak bisa mengirim log dan menyimpannya sementara di buffer (chunk) lalu mencoba kirim ulang (retry). Setelah PostgreSQL hidup lagi, log yang tertunda terkirim sehingga jumlah data naik dari 60 menjadi 120 tanpa ada yang hilang.
 
 ## **Evaluasi dan Latihan Mandiri**
 
@@ -33,22 +42,39 @@
 
 5. Buat query SQL untuk menampilkan jumlah log per menit dalam 10 menit terakhir.
 
+```sql
+SELECT date_trunc('minute', time) AS menit,
+       COUNT(*) AS jumlah_log
+FROM logs.fluentbit
+WHERE time >= NOW() - INTERVAL '10 minutes'
+GROUP BY menit
+ORDER BY menit;
+```
+
+**Penjelasan:** `date_trunc('minute', time)` membulatkan waktu ke menit sehingga log dalam menit yang sama dikelompokkan. `WHERE time >= NOW() - INTERVAL '10 minutes'` membatasi data pada 10 menit terakhir. `COUNT(*)` menghitung jumlah log per kelompok, dan `ORDER BY` mengurutkan hasil dari menit paling lama ke terbaru.
+
 ## **Bukti minimum:**
 
 * Screenshot docker compose ps atau docker ps yang menunjukkan service berjalan.  
   ![Screenshot image7](./assets/bab-6/image7.png)
+  **Penjelasan:** Menunjukkan semua service (Fluent Bit, PostgreSQL, dan container aplikasi) berstatus running, sebagai bukti lingkungan lab sudah aktif.
+
 
 * Screenshot hasil curl/browser/API/dashboard sesuai target bab.  
   ![Screenshot image8](./assets/bab-6/image8.png)
+  **Penjelasan:** Membuktikan layanan merespons dan menghasilkan log yang kemudian dikumpulkan Fluent Bit.
+
 
 * Cuplikan log atau query yang membuktikan sistem bekerja.  
   ![Screenshot image9](./assets/bab-6/image9.png)
+  **Penjelasan:** Menunjukkan log benar-benar tersimpan di PostgreSQL dan bisa dibaca lewat query, sehingga alur container → Fluent Bit → PostgreSQL terbukti berjalan.
 
 ## **Analisis wajib:**
 
 * Jelaskan satu masalah yang muncul dan cara Anda mendiagnosisnya.
 
-  Pada saat pengujian buffering, PostgreSQL sengaja dihentikan sementara untuk menguji proses penyimpanan log. Fluent Bit mengalami kegagalan koneksi ke database dan menampilkan pesan `server closed the connection unexpectedly` serta `failed to flush chunk`.
+
+  **Alur kejadian:** PostgreSQL dihentikan → Fluent Bit gagal flush dan menampilkan `failed to flush chunk` → data ditahan di buffer dan dijadwalkan retry → PostgreSQL dinyalakan kembali → chunk tertunda berhasil terkirim → jumlah log naik dari 60 ke 120. Ini menunjukkan mekanisme buffering dan retry Fluent Bit bekerja, selama buffer belum penuh.
 
   Untuk mendiagnosis masalah tersebut, saya memeriksa log Fluent Bit menggunakan perintah `docker compose logs --tail 200 fluent-bit`. Setelah PostgreSQL dijalankan kembali, Fluent Bit berhasil mengirim ulang log yang tertunda. Hal ini dibuktikan dengan jumlah log yang meningkat dari 60 menjadi 120 data.
 
