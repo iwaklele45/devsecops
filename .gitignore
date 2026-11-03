@@ -23,9 +23,9 @@ __pycache__/
 env/
 
 # Utility scripts
-decode_images.py
-extract_pdf_images.py
-update_markdown_images.py
+# decode_images.py
+# extract_pdf_images.py
+# update_markdown_images.py
 AGENTS.md
 
 
