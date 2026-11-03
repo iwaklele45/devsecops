@@ -4,7 +4,6 @@
   <p>Pratinjau PDF tidak didukung oleh viewer. Buka tautan file: <a href="./docker-lab/bab-6/LAPORAN%20DevSecOps%20BAB-6-PMB.pdf">LAPORAN DevSecOps BAB-6-PMB.pdf</a>.</p>
 </object>
 
->>>>>>> Stashed changes
 ## **Quick start**
 
 cd pmb-devsecops-lab  
