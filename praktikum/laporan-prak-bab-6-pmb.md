@@ -1,5 +1,3 @@
-<<<<<<< Updated upstream
-=======
 > **Lampiran Dokumen PDF:** [LAPORAN DevSecOps BAB-6-PMB.pdf](./docker-lab/bab-6/LAPORAN%20DevSecOps%20BAB-6-PMB.pdf)
 
 <object data="./docker-lab/bab-6/LAPORAN%20DevSecOps%20BAB-6-PMB.pdf" type="application/pdf" width="100%" height="600px">
