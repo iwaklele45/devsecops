@@ -1,0 +1,115 @@
+services:
+  postgres-db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      FLUENTBIT_DB_USER: ${FLUENTBIT_DB_USER}
+      FLUENTBIT_DB_PASSWORD: ${FLUENTBIT_DB_PASSWORD}
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+      - ./init:/docker-entrypoint-initdb.d:ro
+    networks:
+      - logging-net
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    restart: unless-stopped
+
+  fluent-bit:
+    image: fluent/fluent-bit:4.2.8
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      FLUENTBIT_DB_USER: ${FLUENTBIT_DB_USER}
+      FLUENTBIT_DB_PASSWORD: ${FLUENTBIT_DB_PASSWORD}
+    volumes:
+      - ./fluent-bit/fluent-bit.conf:/fluent-bit/etc/fluent-bit.conf:ro
+      - flb-storage:/var/log/flb-storage
+    ports:
+      - "127.0.0.1:24224:24224"
+      - "127.0.0.1:2020:2020"
+    networks:
+      - logging-net
+    depends_on:
+      postgres-db:
+        condition: service_healthy
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+
+  generator-auth:
+    image: alpine:3.20
+    command:
+      - /bin/sh
+      - -c
+      - |
+        i=1
+        while [ "$$i" -le 20 ]; do
+          printf '{"service":"auth","severity":"INFO","event":"login_test","sequence":%s}\n' "$$i"
+          i=$$((i + 1))
+          sleep 1
+        done
+    logging:
+      driver: fluentd
+      options:
+        fluentd-address: "127.0.0.1:24224"
+        fluentd-async: "true"
+        tag: "docker.{{.Name}}"
+    depends_on:
+      - fluent-bit
+
+  generator-api:
+    image: alpine:3.20
+    command:
+      - /bin/sh
+      - -c
+      - |
+        i=1
+        while [ "$$i" -le 20 ]; do
+          printf '{"service":"api","severity":"WARN","event":"latency_test","duration_ms":%s}\n' "$$((i * 10))"
+          i=$$((i + 1))
+          sleep 1
+        done
+    logging:
+      driver: fluentd
+      options:
+        fluentd-address: "127.0.0.1:24224"
+        fluentd-async: "true"
+        tag: "docker.{{.Name}}"
+    depends_on:
+      - fluent-bit
+
+  generator-worker:
+    image: alpine:3.20
+    command:
+      - /bin/sh
+      - -c
+      - |
+        i=1
+        while [ "$$i" -le 20 ]; do
+          printf '{"service":"worker","severity":"ERROR","event":"retry_test","attempt":%s}\n' "$$i"
+          i=$$((i + 1))
+          sleep 1
+        done
+    logging:
+      driver: fluentd
+      options:
+        fluentd-address: "127.0.0.1:24224"
+        fluentd-async: "true"
+        tag: "docker.{{.Name}}"
+    depends_on:
+      - fluent-bit
+
+volumes:
+  pg-data:
+  flb-storage:
+
+networks:
+  logging-net:
+    driver: bridge
