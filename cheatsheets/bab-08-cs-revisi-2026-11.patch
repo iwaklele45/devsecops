@@ -1,0 +1,574 @@
+diff --git a/cheatsheets/bab-08-cs.md b/cheatsheets/bab-08-cs.md
+index e4c4056..65e7150 100644
+--- a/cheatsheets/bab-08-cs.md
++++ b/cheatsheets/bab-08-cs.md
+@@ -4,6 +4,8 @@ Cheatsheet ini mengikuti pola Bab 3–7. Setiap berkas yang perlu dibuat ditempa
+ 
+ > **Perbaikan keamanan terhadap draf awal.** Registry tidak dijalankan menggunakan HTTP anonim. Lab ini menggunakan TLS, autentikasi `htpasswd` bcrypt, dan port loopback. Trivy memindai arsip image sehingga container scanner tidak memerlukan mount `/var/run/docker.sock`.
+ 
++> **Revisi November 2026.** (1) Network aplikasi dan registry tidak lagi `internal: true`, karena Docker tidak memasang port publish untuk container yang hanya terhubung ke network internal. (2) Secret dan aset registry dilindungi oleh direktori `0700`, sedangkan filenya `0444` dan di-bind-mount satu per satu, sehingga proses non-root dan proses tanpa capability DAC tetap dapat membacanya. (3) Health check membaca secret, bukan hanya memeriksa keberadaan file. (4) Push ke `localhost` tidak lagi dianggap bukti validasi TLS. (5) Negative test read-only, seccomp, swap, identitas image, dan pencarian nilai secret diperketat.
++
+ | Kotak | Nama file | Fungsi |
+ |---:|---|---|
+ | 1 | `.env.example` | Template identitas dan credential sintetis registry |
+@@ -37,9 +39,12 @@ Image hanya dipromosikan ke registry apabila security gate menyatakan `PASS`. Ha
+ ```bash
+ mkdir -p ~/docker-lab/bab-8/{app,secrets,registry/certs,registry/auth,scripts,reports}
+ cd ~/docker-lab/bab-8
++chmod 700 secrets registry registry/certs registry/auth
+ touch reports/.gitkeep
+ ```
+ 
++Direktori `secrets/` dan `registry/` bermode `0700` sehingga akun lain di host tidak dapat menelusuri isinya. Mode file di dalamnya diatur pada Kotak Script 7 dan 9.
++
+ Struktur akhir:
+ 
+ ```text
+@@ -142,7 +147,7 @@ Karena build context pada Compose menggunakan root Bab 8, Dockerfile akan menyal
+ 
+ ```text
+ Flask==3.1.3
+-gunicorn==26.1.0
++gunicorn==26.2.0
+ ```
+ 
+ Versi dipin agar build lebih dapat direproduksi. Untuk pipeline produksi, gunakan lock file beserta hash paket dan proses pembaruan dependency terjadwal.
+@@ -162,6 +167,15 @@ from flask import Flask, jsonify
+ 
+ app = Flask(__name__)
+ SECRET_PATH = Path("/run/secrets/app_secret")
++MIN_SECRET_BYTES = 32
++
++
++def secret_ready() -> bool:
++    """Secret siap bila dapat dibaca UID aplikasi dan cukup panjang."""
++    try:
++        return len(SECRET_PATH.read_bytes().strip()) >= MIN_SECRET_BYTES
++    except OSError:
++        return False
+ 
+ 
+ @app.get("/")
+@@ -171,18 +185,18 @@ def index():
+         status="running",
+         uid=os.getuid(),
+         gid=os.getgid(),
+-        secret_mounted=SECRET_PATH.is_file(),
++        secret_ready=secret_ready(),
+     )
+ 
+ 
+ @app.get("/health")
+ def health():
+-    if not SECRET_PATH.is_file():
+-        return jsonify(status="degraded", reason="secret_missing"), 503
++    if not secret_ready():
++        return jsonify(status="degraded", reason="secret_unavailable"), 503
+     return jsonify(status="ok"), 200
+ ```
+ 
+-Aplikasi hanya mengonfirmasi keberadaan secret dan tidak mengembalikan nilainya. Logging secret, hash secret, atau sebagian token tetap dapat memperluas informasi yang tersedia bagi penyerang.
++Aplikasi membaca secret untuk memastikan nilainya benar-benar tersedia bagi UID aplikasi, tetapi tidak pernah mengembalikan atau mencatat nilainya. Pemeriksaan `is_file()` saja tidak cukup: file dapat ada di `/run/secrets` tetapi tidak dapat dibaca karena mode file di host. Logging secret, hash secret, atau sebagian token tetap dapat memperluas informasi yang tersedia bagi penyerang.
+ 
+ ## Kotak Script 6 — File `app/Dockerfile`
+ 
+@@ -193,7 +207,7 @@ Aplikasi hanya mengonfirmasi keberadaan secret dan tidak mengembalikan nilainya.
+ ```dockerfile
+ # syntax=docker/dockerfile:1
+ 
+-FROM python:3.11.16-slim AS builder
++FROM python:3.11.18-slim AS builder
+ 
+ ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
+     PIP_NO_CACHE_DIR=1
+@@ -206,7 +220,7 @@ RUN python -m venv /opt/venv \
+     && /opt/venv/bin/pip install --no-cache-dir --requirement requirements.txt
+ 
+ 
+-FROM python:3.11.16-slim AS runtime
++FROM python:3.11.18-slim AS runtime
+ 
+ ARG APP_UID=10001
+ ARG APP_GID=10001
+@@ -240,6 +254,8 @@ CMD ["gunicorn", "--bind=0.0.0.0:8080", "--workers=2", "--threads=2", "--worker-
+ 
+ Multi-stage build memisahkan tahap pemasangan dependency dari runtime. User numerik mengurangi ambiguitas pemetaan akun, tetapi base image dan dependency tetap harus dipindai serta diperbarui.
+ 
++Tag versi patch, misalnya `3.11.18-slim`, berhenti dibangun ulang setelah rilis patch berikutnya. Sebelum kelas, verifikasi rilis patch Python 3.11 terbaru, catat digest base image, dan perbarui kedua baris `FROM` bila perlu. Tanpa langkah ini, security gate dapat berstatus `BLOCKED` karena paket OS pada image lama, dan `docker compose build --pull` tidak mengubah hasilnya.
++
+ ## Kotak Script 7 — File `secrets/app_secret.txt.example`
+ 
+ > **Nama file:** `app_secret.txt.example`  
+@@ -253,10 +269,13 @@ GANTI_DENGAN_NILAI_ACAK_KHUSUS_LAB
+ Jangan menyalin nilai contoh sebagai secret aktif. Buat nilai acak:
+ 
+ ```bash
++chmod 700 secrets
+ openssl rand -hex 32 > secrets/app_secret.txt
+-chmod 600 secrets/app_secret.txt
++chmod 444 secrets/app_secret.txt
+ ```
+ 
++Compose tanpa Swarm memasang secret berbasis file sebagai bind mount. Atribut `uid`, `gid`, dan `mode` pada service tidak diterapkan untuk sumber berupa file, sehingga mode file di host terbawa apa adanya ke `/run/secrets`. Mode `0600` milik akun host membuat UID 10001 di container tidak dapat membaca secret. Karena itu, file dibuat `0444` agar terbaca di container, sedangkan perlindungan terhadap akun lain di host diberikan oleh direktori induk `secrets/` bermode `0700`. Pendekatan ini sesuai untuk laptop lab satu pengguna; akun root host tetap dapat membaca secret.
++
+ ## Kotak Script 8 — File `compose.yaml`
+ 
+ > **Nama file:** `compose.yaml`  
+@@ -324,8 +343,9 @@ services:
+       - "127.0.0.1:5000:5000"
+     volumes:
+       - registry-data:/var/lib/registry
+-      - ./registry/certs:/certs:ro
+-      - ./registry/auth:/auth:ro
++      - ./registry/certs/domain.crt:/certs/domain.crt:ro
++      - ./registry/certs/domain.key:/certs/domain.key:ro
++      - ./registry/auth/htpasswd:/auth/htpasswd:ro
+     networks:
+       - registry-net
+     restart: unless-stopped
+@@ -352,14 +372,18 @@ volumes:
+   trivy-cache:
+ 
+ networks:
+-  app-net:
+-    internal: true
+-  registry-net:
+-    internal: true
++  # Jangan memakai internal: true di sini. Docker tidak memasang port publish
++  # untuk container yang hanya terhubung ke network internal.
++  app-net: {}
++  registry-net: {}
+ ```
+ 
+ `cap_drop: ALL`, filesystem read-only, `no-new-privileges`, batas PID, CPU, memory, dan swap memperkecil blast radius. Kontrol tersebut harus diuji terhadap fungsi aplikasi; hardening yang membuat fungsi sah gagal bukan konfigurasi yang selesai.
+ 
++Aplikasi dan registry tetap berada pada network terpisah sehingga keduanya tidak dapat saling menjangkau. Karena network tidak internal, keduanya memiliki akses jaringan keluar; port publish tetap hanya diikat ke `127.0.0.1`. Pembatasan egress memerlukan kontrol host atau platform dan dicatat sebagai residual risk.
++
++Aset registry dipasang per file, bukan per direktori. Proses registry berjalan tanpa capability `DAC_OVERRIDE` sehingga tidak dapat menelusuri direktori host bermode `0700` milik akun lain; bind mount per file tidak memerlukan penelusuran tersebut. Konsekuensinya, penggantian file saat rotasi baru terlihat setelah container registry dibuat ulang.
++
+ ## Kotak Script 9 — File `scripts/generate-registry-assets.sh`
+ 
+ > **Nama file:** `generate-registry-assets.sh`  
+@@ -417,8 +441,17 @@ printf '%s\n' "$REGISTRY_PASSWORD" \
+         -Bni "$REGISTRY_USER" \
+     > registry/auth/htpasswd
+ 
+-chmod 600 registry/certs/domain.key registry/auth/htpasswd
++grep -qF "${REGISTRY_USER}:\$2y\$" registry/auth/htpasswd || {
++    echo "[FAIL] htpasswd tidak berisi hash bcrypt untuk $REGISTRY_USER." >&2
++    exit 1
++}
++
++# Direktori 0700 menutup akses akun lain di host. File 0444 diperlukan karena
++# registry berjalan tanpa capability DAC dan tidak dapat membaca file 0600
++# milik akun host.
++chmod 700 registry registry/certs registry/auth
+ chmod 644 registry/certs/domain.crt
++chmod 444 registry/certs/domain.key registry/auth/htpasswd
+ 
+ echo "[PASS] Sertifikat dan htpasswd berhasil dibuat."
+ echo "[INFO] Sertifikat berlaku 365 hari untuk localhost."
+@@ -453,13 +486,16 @@ set +a
+ mkdir -p reports
+ archive_name="pens-web-1.0.tar"
+ 
+-docker image inspect "$APP_IMAGE" >/dev/null
++# Identitas image yang dipindai; push-registry.sh menolak image dengan ID lain.
++docker image inspect "$APP_IMAGE" --format '{{.Id}}' > reports/scanned-image-id.txt
+ docker image save --output "reports/$archive_name" "$APP_IMAGE"
+ 
+ run_trivy() {
+     docker compose --profile tools run --rm --no-deps trivy "$@"
+ }
+ 
++run_trivy --version > reports/trivy-version.txt
++
+ run_trivy image \
+     --input "/workspace/reports/$archive_name" \
+     --scanners vuln,secret \
+@@ -472,16 +508,13 @@ run_trivy image \
+     --format cyclonedx \
+     > reports/pens-web-1.0.cdx.json
+ 
++# Trivy memeriksa Dockerfile, tetapi tidak memiliki pemeriksaan bawaan untuk
++# Docker Compose. Konfigurasi Compose diuji melalui verify-hardening.sh.
+ run_trivy config \
+     --severity MEDIUM,HIGH,CRITICAL \
+     /workspace/app \
+     > reports/trivy-config.txt
+ 
+-run_trivy config \
+-    --severity MEDIUM,HIGH,CRITICAL \
+-    /workspace/compose.yaml \
+-    >> reports/trivy-config.txt
+-
+ run_trivy fs \
+     --scanners secret \
+     /workspace/app \
+@@ -508,11 +541,9 @@ else
+     exit 1
+ fi
+ 
+-docker image inspect "$APP_IMAGE" \
+-    --format '{{json .RepoDigests}}' \
+-    > reports/local-image-digests.json
+-
+ sha256sum \
++    reports/scanned-image-id.txt \
++    reports/trivy-version.txt \
+     reports/trivy-image.json \
+     reports/pens-web-1.0.cdx.json \
+     reports/trivy-config.txt \
+@@ -525,6 +556,10 @@ echo "[PASS] Laporan, SBOM, dan checksum berhasil dibuat."
+ 
+ `--ignore-unfixed` hanya digunakan pada keputusan gate agar lab tidak berhenti pada temuan yang belum mempunyai perbaikan. Temuan tanpa perbaikan tetap tercatat pada `trivy-image.json` dan tetap membutuhkan triage, mitigasi, atau penerimaan risiko yang terdokumentasi.
+ 
++Image yang dibangun lokal belum memiliki `RepoDigests` sebelum di-push. Karena itu, identitas image yang dipindai dicatat sebagai image ID (`.Id`). Registry digest baru tersedia setelah push dan dicatat oleh `push-registry.sh`.
++
++Trivy sendiri juga merupakan dependency rantai pasok. Pada Maret 2026, image `aquasec/trivy` versi 0.69.4, 0.69.5, dan 0.69.6 serta tag `latest` pada periode tertentu diketahui memuat malware. Gunakan versi yang dipin, catat digest image scanner setelah diverifikasi, dan jangan memasang Docker socket ke container scanner.
++
+ ## Kotak Script 11 — File `scripts/push-registry.sh`
+ 
+ > **Nama file:** `push-registry.sh`  
+@@ -557,6 +592,25 @@ if [[ ! -f reports/gate-status.txt ]] \
+     exit 1
+ fi
+ 
++scanned_id="$(< reports/scanned-image-id.txt)"
++current_id="$(docker image inspect "$APP_IMAGE" --format '{{.Id}}')"
++if [[ "$current_id" != "$scanned_id" ]]; then
++    echo "[BLOCKED] Image berubah sejak dipindai. Jalankan ulang scan-image.sh." >&2
++    exit 1
++fi
++
++# Password dikirim melalui stdin agar tidak terlihat pada daftar proses.
++registry_get() {
++    printf 'user = "%s:%s"\n' "$REGISTRY_USER" "$REGISTRY_PASSWORD" \
++        | curl --config - \
++            --fail --silent --show-error \
++            --cacert registry/certs/domain.crt \
++            "https://$REGISTRY_HOST$1"
++}
++
++# Credential login dihapus walaupun script berhenti di tengah jalan.
++trap 'docker logout "$REGISTRY_HOST" >/dev/null 2>&1 || true' EXIT
++
+ printf '%s\n' "$REGISTRY_PASSWORD" \
+     | docker login "$REGISTRY_HOST" \
+         --username "$REGISTRY_USER" \
+@@ -566,28 +620,29 @@ remote_image="$REGISTRY_HOST/pens-web:1.0"
+ 
+ docker tag "$APP_IMAGE" "$remote_image"
+ docker push "$remote_image"
++
++# Hapus tag registry lokal agar pull benar-benar mengambil manifest dari registry.
++docker image rm "$remote_image" >/dev/null
+ docker pull "$remote_image"
+ 
+-curl --fail --silent --show-error \
+-    --cacert registry/certs/domain.crt \
+-    --user "$REGISTRY_USER:$REGISTRY_PASSWORD" \
+-    "https://$REGISTRY_HOST/v2/_catalog" \
+-    | tee reports/registry-catalog.json
++pulled_id="$(docker image inspect "$remote_image" --format '{{.Id}}')"
++if [[ "$pulled_id" != "$scanned_id" ]]; then
++    echo "[FAIL] Image hasil pull berbeda dari image yang dipindai." >&2
++    exit 1
++fi
+ 
+-curl --fail --silent --show-error \
+-    --cacert registry/certs/domain.crt \
+-    --user "$REGISTRY_USER:$REGISTRY_PASSWORD" \
+-    "https://$REGISTRY_HOST/v2/pens-web/tags/list" \
+-    | tee reports/registry-tags.json
++registry_get /v2/_catalog | tee reports/registry-catalog.json
++registry_get /v2/pens-web/tags/list | tee reports/registry-tags.json
+ 
+ docker image inspect "$remote_image" \
+     --format '{{json .RepoDigests}}' \
+     | tee reports/registry-digests.json
+ 
+-docker logout "$REGISTRY_HOST"
+-echo "[PASS] Push, pull, katalog, tag, dan digest telah diverifikasi."
++echo "[PASS] Push, pull, identitas image, katalog, tag, dan digest telah diverifikasi."
+ ```
+ 
++Tanpa credential helper, `docker login` menyimpan credential pada `~/.docker/config.json`; `trap` memastikan credential tersebut dihapus ketika script selesai atau gagal. Format `user = "..."` pada konfigurasi curl tidak mendukung tanda kutip ganda di dalam password, sehingga password lab hanya memakai huruf, angka, dan tanda hubung.
++
+ ## Kotak Script 12 — File `scripts/verify-hardening.sh`
+ 
+ > **Nama file:** `verify-hardening.sh`  
+@@ -617,10 +672,13 @@ uid="$(docker compose exec -T app id -u)"
+     && pass "Proses aplikasi berjalan sebagai UID 10001." \
+     || fail "UID aplikasi adalah $uid."
+ 
+-if docker compose exec -T app sh -c 'touch /unauthorized-write' 2>/dev/null; then
+-    fail "Filesystem root masih dapat ditulis."
++# /app/app.py dimiliki UID 10001. Penulisan hanya ditolak bila rootfs read-only,
++# sehingga uji ini membedakan read_only dari sekadar permission file.
++ro_error="$(docker compose exec -T app sh -c 'touch /app/app.py 2>&1' || true)"
++if [[ "$ro_error" == *"Read-only file system"* ]]; then
++    pass "Penulisan ke filesystem root ditolak karena rootfs read-only."
+ else
+-    pass "Penulisan ke filesystem root ditolak."
++    fail "Rootfs tidak read-only: ${ro_error:-penulisan berhasil}"
+ fi
+ 
+ docker compose exec -T app sh -c 'touch /tmp/allowed-write && rm /tmp/allowed-write' \
+@@ -643,9 +701,17 @@ no_new_privs="$(
+     && pass "NoNewPrivs aktif." \
+     || fail "NoNewPrivs tidak aktif."
+ 
++seccomp_mode="$(
++    docker compose exec -T app sh -c \
++        "awk '/^Seccomp:/ {print \$2}' /proc/1/status"
++)"
++[[ "$seccomp_mode" == "2" ]] \
++    && pass "Profil seccomp aktif (mode filter)." \
++    || fail "Seccomp tidak aktif: mode $seccomp_mode."
++
+ docker compose exec -T app test -r /run/secrets/app_secret \
+-    && pass "Secret tersedia sebagai file read-only." \
+-    || fail "Secret tidak dapat dibaca aplikasi."
++    && pass "Secret dapat dibaca UID aplikasi." \
++    || fail "Secret tidak dapat dibaca UID aplikasi; periksa mode file di host."
+ 
+ if docker compose exec -T app env | grep -q '^APP_SECRET='; then
+     fail "Secret ditemukan sebagai environment variable."
+@@ -658,14 +724,14 @@ docker compose exec -T app test ! -S /var/run/docker.sock \
+     || fail "Docker socket terpasang ke container aplikasi."
+ 
+ container_id="$(docker compose ps -q app)"
+-read -r memory nano_cpus pids readonly_root <<<"$(
++read -r memory memory_swap nano_cpus pids readonly_root <<<"$(
+     docker inspect "$container_id" \
+-        --format '{{.HostConfig.Memory}} {{.HostConfig.NanoCpus}} {{.HostConfig.PidsLimit}} {{.HostConfig.ReadonlyRootfs}}'
++        --format '{{.HostConfig.Memory}} {{.HostConfig.MemorySwap}} {{.HostConfig.NanoCpus}} {{.HostConfig.PidsLimit}} {{.HostConfig.ReadonlyRootfs}}'
+ )"
+ 
+-if (( memory > 0 && nano_cpus > 0 && pids > 0 )) \
++if (( memory > 0 && memory_swap == memory && nano_cpus > 0 && pids > 0 )) \
+     && [[ "$readonly_root" == "true" ]]; then
+-    pass "Limit memory, CPU, PID, dan read-only rootfs aktif."
++    pass "Limit memory, swap, CPU, PID, dan read-only rootfs aktif."
+ else
+     fail "Runtime limit tidak lengkap."
+ fi
+@@ -701,9 +767,18 @@ done
+     && pass "Registry menolak akses anonim dengan HTTP 401." \
+     || fail "Registry memberi status anonim $unauth_code."
+ 
++# Klien tanpa CA lab harus menolak sertifikat self-signed (curl exit 60).
++tls_rc=0
++curl --silent --output /dev/null https://localhost:5000/v2/ || tls_rc=$?
++[[ "$tls_rc" -eq 60 ]] \
++    && pass "Klien tanpa CA lab menolak sertifikat registry." \
++    || fail "Validasi sertifikat tidak berjalan sesuai harapan (curl exit $tls_rc)."
++
+ echo "[PASS] Total kontrol terverifikasi: $pass_count"
+ ```
+ 
++Pemeriksaan pada `/proc/1/status` membaca proses init container karena `init: true`. Proses aplikasi mewarisi user, capability, `NoNewPrivs`, dan seccomp yang sama; nilai `uid` pada response aplikasi menjadi evidence pelengkap.
++
+ ## Kotak Perintah B — Izin Eksekusi dan Validasi Statis
+ 
+ ```bash
+@@ -723,11 +798,22 @@ Validasi struktur Dockerfile dan Compose dengan Trivy dilakukan kembali setelah
+ ## Kotak Perintah C — Membuat Secret, Sertifikat, dan Akun Registry
+ 
+ ```bash
++chmod 700 secrets
+ openssl rand -hex 32 > secrets/app_secret.txt
+-chmod 600 secrets/app_secret.txt
++chmod 444 secrets/app_secret.txt
+ ./scripts/generate-registry-assets.sh
+ ```
+ 
++Periksa mode akhir:
++
++```bash
++stat -c '%a %n' secrets secrets/app_secret.txt \
++  registry registry/certs registry/auth \
++  registry/certs/domain.crt registry/certs/domain.key registry/auth/htpasswd
++```
++
++Hasil yang diharapkan: direktori `700`, `domain.crt` `644`, serta `app_secret.txt`, `domain.key`, dan `htpasswd` `444`.
++
+ Periksa SAN dan masa berlaku sertifikat:
+ 
+ ```bash
+@@ -740,35 +826,17 @@ openssl x509 \
+   -ext subjectAltName
+ ```
+ 
+-## Kotak Perintah D — Memercayai CA Registry pada Docker Engine
++## Kotak Perintah D — Memahami Validasi TLS pada Docker Engine
+ 
+-Pada Docker Engine native Linux:
++Docker Engine memperlakukan registry pada `127.0.0.0/8` dan `::1/128` sebagai insecure secara default. Untuk registry insecure, Engine tetap mencoba HTTPS tetapi mengabaikan kesalahan sertifikat. Periksa konfigurasi efektif:
+ 
+ ```bash
+-sudo mkdir -p /etc/docker/certs.d/localhost:5000
+-sudo cp registry/certs/domain.crt \
+-  /etc/docker/certs.d/localhost:5000/ca.crt
+-sudo systemctl restart docker
++docker info --format '{{json .RegistryConfig.InsecureRegistryCIDRs}}'
+ ```
+ 
+-Pada Docker Engine rootless Linux:
++Bila keluaran memuat `127.0.0.0/8`, push dan pull ke `localhost:5000` **bukan** bukti bahwa Docker memvalidasi sertifikat registry. Pada lab ini, validasi TLS dibuktikan dengan dua uji klien: `curl --cacert registry/certs/domain.crt` berhasil, dan `curl` tanpa CA lab gagal dengan exit code 60. Kedua uji dijalankan oleh `verify-hardening.sh`. Karena itu, lab ini tidak memerlukan penyalinan CA ke trust store Docker maupun restart daemon.
+ 
+-```bash
+-mkdir -p ~/.config/docker/certs.d/localhost:5000
+-cp registry/certs/domain.crt \
+-  ~/.config/docker/certs.d/localhost:5000/ca.crt
+-systemctl --user restart docker
+-```
+-
+-Pada Docker Desktop dengan Linux containers:
+-
+-```bash
+-mkdir -p ~/.docker/certs.d/localhost:5000
+-cp registry/certs/domain.crt \
+-  ~/.docker/certs.d/localhost:5000/ca.crt
+-```
+-
+-Setelah penyalinan pada Docker Desktop, restart aplikasi Docker Desktop. Restart daemon menghentikan atau memengaruhi container lain; simpan pekerjaan lab aktif terlebih dahulu.
++Untuk registry dengan nama DNS nyata, misalnya `registry.lab.example:5000`, Engine memvalidasi sertifikat. CA ditempatkan pada `/etc/docker/certs.d/<host:port>/ca.crt` untuk Engine native, atau `~/.config/docker/certs.d/<host:port>/ca.crt` untuk Engine rootless. Untuk Docker Desktop, ikuti panduan sertifikat Docker Desktop sesuai sistem operasi. Restart daemon menghentikan atau memengaruhi container lain; lakukan secara terencana.
+ 
+ ## Kotak Perintah E — Build dan Menjalankan Runtime yang Diperkeras
+ 
+@@ -786,7 +854,7 @@ curl --fail --silent --show-error \
+   | python3 -m json.tool
+ ```
+ 
+-Output harus menunjukkan `uid` dan `gid` bernilai `10001`, serta `secret_mounted` bernilai `true`.
++Output harus menunjukkan `uid` dan `gid` bernilai `10001`, serta `secret_ready` bernilai `true`. Bila `secret_ready` bernilai `false`, periksa mode `secrets/app_secret.txt` pada Kotak Perintah C sebelum mengubah konfigurasi lain.
+ 
+ ## Kotak Perintah F — Menjalankan Negative Test Hardening
+ 
+@@ -816,6 +884,8 @@ Periksa status gate dan checksum:
+ 
+ ```bash
+ cat reports/gate-status.txt
++cat reports/trivy-version.txt
++cat reports/scanned-image-id.txt
+ sha256sum --check reports/SHA256SUMS
+ ```
+ 
+@@ -843,51 +913,67 @@ Registry API tetap memakai path `/v2/` karena Distribution Registry 3 mempertaha
+ 
+ ## Kotak Perintah I — Membuktikan Secret Tidak Masuk Image
+ 
+-Cari nama dan nilai contoh secret pada history serta filesystem image:
++Cari nilai secret aktif pada history dan filesystem image. Nilai dibaca dari file dan dikirim melalui stdin sehingga tidak muncul pada argumen perintah:
+ 
+ ```bash
+-docker history --no-trunc pens-web:1.0 \
+-  | tee reports/docker-history.txt
++docker history --no-trunc pens-web:1.0 > reports/docker-history.txt
++
++if grep -qF -f secrets/app_secret.txt reports/docker-history.txt; then
++  echo "[FAIL] Nilai secret ditemukan pada history image."
++else
++  echo "[PASS] Nilai secret tidak ditemukan pada history image."
++fi
+ 
+-docker run --rm \
++docker run --rm -i \
++  --network none \
+   --entrypoint sh \
+   pens-web:1.0 \
+-  -c 'test ! -e /run/secrets/app_secret && test ! -d /secrets'
++  -c 'read -r s
++      if grep -rqsF -- "$s" /app /opt /etc /usr/local; then
++        echo "[FAIL] Nilai secret ditemukan pada filesystem image."; exit 1
++      fi
++      echo "[PASS] Nilai secret tidak ditemukan pada filesystem image."' \
++  < secrets/app_secret.txt
+ ```
+ 
+-PASS membuktikan file runtime secret tidak ada pada image. Hal ini belum membuktikan seluruh riwayat build bebas secret; laporan secret scanner dan audit build context tetap diperlukan.
++PASS membuktikan nilai secret aktif tidak tertanam pada history image maupun direktori aplikasi, dependency, dan konfigurasi. Uji ini tidak mencakup file yang tidak dapat dibaca UID 10001 dan belum membuktikan seluruh riwayat build bebas secret; laporan secret scanner dan audit build context tetap diperlukan.
+ 
+ ## Tabel Verifikasi PASS/FAIL
+ 
+ | No. | Kontrol | Evidence yang sahih | PASS | FAIL |
+ |---:|---|---|---|---|
+ | 1 | User non-root | `id -u` dan response aplikasi | UID `10001` | UID `0`/tidak sesuai |
+-| 2 | Read-only rootfs | Negative test `touch /unauthorized-write` | Ditolak | Berhasil menulis |
++| 2 | Read-only rootfs | Negative test `touch /app/app.py` pada file milik UID 10001 | Galat `Read-only file system` | Berhasil menulis atau galat lain |
+ | 3 | Writable path terkontrol | File sementara pada `/tmp` | Berhasil dan dapat dihapus | Aplikasi tidak dapat memakai `/tmp` |
+ | 4 | Capability | `CapEff` pada `/proc/1/status` | Seluruh bit nol | Masih ada capability |
+ | 5 | Privilege escalation | `NoNewPrivs` | Nilai `1` | Nilai `0` |
+-| 6 | Secret injection | `/run/secrets/app_secret` | File tersedia; tidak ada `APP_SECRET` | Secret hilang atau berada di env |
+-| 7 | Docker socket | Pemeriksaan socket | Tidak tersedia | Socket terpasang |
+-| 8 | Resource limit | `docker inspect` | Memory, CPU, PID, swap terbatas | Salah satu tidak dibatasi |
+-| 9 | Healthcheck | `docker compose ps` dan `/health` | `healthy`, HTTP 200 | `unhealthy`/non-200 |
+-| 10 | Scan lengkap | Laporan JSON, konfigurasi, secret, dan SBOM | Artefak ada dan checksum valid | Laporan hilang/tidak konsisten |
+-| 11 | Security gate | `gate-status.txt` | `PASS` | `BLOCKED` |
+-| 12 | TLS registry | `curl --cacert` | Validasi sertifikat berhasil | `x509`/hostname mismatch |
+-| 13 | Authentication | Request `/v2/` anonim | HTTP 401 | HTTP 200 anonim |
+-| 14 | Distribusi | Push, pull, katalog, dan digest | Seluruhnya berhasil | Push/pull/query gagal |
++| 6 | Seccomp | `Seccomp` pada `/proc/1/status` | Nilai `2` | Nilai `0` |
++| 7 | Secret injection | `test -r` dan `secret_ready` | Terbaca UID 10001; tidak ada `APP_SECRET` | Tidak terbaca, hilang, atau berada di env |
++| 8 | Docker socket | Pemeriksaan socket | Tidak tersedia | Socket terpasang |
++| 9 | Resource limit | `docker inspect` | Memory, CPU, PID terbatas; swap sama dengan memory | Salah satu tidak dibatasi |
++| 10 | Healthcheck | `docker compose ps` dan `/health` | `healthy`, HTTP 200 | `unhealthy`/non-200 |
++| 11 | Scan lengkap | Laporan JSON, konfigurasi, secret, SBOM, versi Trivy | Artefak ada dan checksum valid | Laporan hilang/tidak konsisten |
++| 12 | Security gate | `gate-status.txt` dan `scanned-image-id.txt` | `PASS`; image ID sama saat push | `BLOCKED` atau image berubah |
++| 13 | TLS registry | `curl` dengan dan tanpa CA lab | Dengan CA berhasil; tanpa CA exit 60 | Tanpa CA berhasil atau dengan CA gagal |
++| 14 | Authentication | Request `/v2/` anonim | HTTP 401 | HTTP 200 anonim |
++| 15 | Distribusi | Push, pull, image ID, katalog, dan digest | Image hasil pull identik dengan image yang dipindai | Push/pull/query gagal atau ID berbeda |
++| 16 | Secret tidak tertanam | Kotak Perintah I | Nilai tidak ditemukan | Nilai ditemukan |
+ 
+ ## Troubleshooting dan Analisis Hasil
+ 
+ | Gejala | Diagnosis yang mungkin | Pemeriksaan | Tindakan korektif |
+ |---|---|---|---|
+ | Build gagal saat memasang dependency | Tag base image, jaringan, atau versi paket tidak tersedia | Log BuildKit; PyPI; tag image | Verifikasi versi resmi, jaringan, dan bangun ulang tanpa memasukkan secret |
+-| Aplikasi `unhealthy` | Secret belum dibuat atau `/tmp` tidak dapat ditulis | `docker compose logs app`; inspect health | Buat secret, verifikasi tmpfs, dan uji endpoint dari dalam container |
++| `curl 127.0.0.1:8088` atau push ke `localhost:5000` gagal walaupun container `Up` | Service hanya terhubung ke network `internal: true` sehingga port tidak dipasang | `docker compose config`; `docker port <container>` | Hubungkan service yang dipublikasikan ke network non-internal |
++| Aplikasi `unhealthy` | Secret belum dibuat, tidak terbaca UID 10001, atau `/tmp` tidak dapat ditulis | `docker compose logs app`; `stat -c '%a' secrets/app_secret.txt`; inspect health | Buat secret dengan mode `0444` di direktori `0700`, verifikasi tmpfs, dan uji endpoint dari dalam container |
+ | `permission denied` pada aplikasi | User non-root membutuhkan direktori tulis yang belum disediakan | Log aplikasi; `id`; mount efektif | Tambahkan tmpfs/volume pada jalur paling sempit; jangan mengubah container menjadi root |
+ | Trivy tidak menemukan image | Image belum dibangun atau nama berbeda | `docker image ls`; `.env` | Bangun image dan verifikasi `APP_IMAGE` |
+ | Gate berubah tanpa perubahan image | Database vulnerability Trivy diperbarui | Simpan versi Trivy, waktu, digest, dan laporan | Lakukan triage ulang; image yang sama dapat memperoleh temuan baru |
+ | Trivy kehabisan waktu saat pertama kali | Database scanner sedang diunduh | Log Trivy; konektivitas registry database | Ulangi setelah cache tersedia; jangan memakai database usang tanpa mencatatnya |
+-| Registry gagal startup | `htpasswd` bukan bcrypt, berkas tidak terbaca, atau TLS salah | `docker compose logs registry` | Buat ulang aset secara sadar dan periksa permission serta path mount |
+-| Docker login gagal `x509` | CA belum dipasang pada trust store daemon atau SAN salah | `openssl x509`; log daemon | Salin CA ke direktori platform yang benar lalu restart Docker |
++| Registry gagal startup dengan `permission denied` | `domain.key` atau `htpasswd` bermode `0600`, atau direktori dipasang alih-alih file | `docker compose logs registry`; `stat -c '%a %n' registry/*/*` | Gunakan mode `0444` di direktori `0700` dan bind mount per file |
++| Registry gagal startup karena konfigurasi | `htpasswd` bukan bcrypt atau TLS salah | `docker compose logs registry` | Buat ulang aset secara sadar dan periksa path mount |
++| `curl --cacert` gagal `SSL certificate problem` | Path CA salah atau SAN tidak memuat `localhost` | `openssl x509 -noout -ext subjectAltName` | Perbaiki path atau buat ulang sertifikat; Docker Engine sendiri mengabaikan galat sertifikat untuk `localhost` |
++| Push ditolak karena image berubah | Image dibangun ulang setelah dipindai | `docker image inspect --format '{{.Id}}'`; `reports/scanned-image-id.txt` | Jalankan ulang `scan-image.sh` sebelum push |
+ | Registry memberi HTTP 200 tanpa login | Autentikasi tidak termuat | Log registry; environment efektif; file htpasswd | Hentikan registry dan perbaiki `REGISTRY_AUTH*`; jangan lanjutkan push |
+ | Push ditolak script | Gate belum `PASS` | `reports/gate-status.txt`; laporan gate | Perbarui image atau dependency; jangan mengedit status manual |
+ | Memory limit tampak tidak bekerja | Perbedaan dukungan cgroup/WSL 2 | `docker info`; inspect; metric Bab 7 | Catat platform dan uji pada host Linux bila validasi kernel penuh diperlukan |
+@@ -896,7 +982,8 @@ PASS membuktikan file runtime secret tidak ada pada image. Hal ini belum membukt
+ ## Catatan Keamanan Windows dan Linux
+ 
+ - Pada Windows, jalankan perintah Bash melalui WSL 2. Docker Desktop menjalankan Linux containers di mesin virtual; bukti limit resource harus ditafsirkan terhadap VM tersebut.
+-- Lokasi trust store Docker berbeda antara Engine native, Engine rootless, dan Docker Desktop. Menyalin CA hanya ke browser tidak otomatis membuat Docker daemon mempercayainya.
++- Lokasi trust store Docker berbeda antara Engine native, Engine rootless, dan Docker Desktop. Menyalin CA hanya ke browser tidak otomatis membuat Docker daemon mempercayainya. Untuk `localhost`, daemon tidak memvalidasi sertifikat sama sekali (Kotak Perintah D).
++- Simpan direktori lab pada filesystem WSL, misalnya `~/docker-lab`, bukan `/mnt/c/...`. Pada filesystem Windows, `chmod` dapat tidak berpengaruh sehingga mode `0700` dan `0444` tidak dapat dijamin.
+ - Keanggotaan grup `docker`, akses Docker Desktop, atau akses ke Docker socket memberi kemampuan administratif yang kuat. Praktikum harus memakai laptop lab atau akun yang sesuai kebijakan institusi.
+ - Default seccomp Docker sengaja tidak dinonaktifkan. Kustomisasi profil hanya dilakukan setelah kebutuhan syscall diukur dan diuji.
+ 
+@@ -928,6 +1015,8 @@ Apabila sertifikat lab tidak lagi digunakan, hapus CA dari trust store Docker se
+ 6. Tambahkan akun registry kedua dan jelaskan mengapa autentikasi basic bawaan belum menyediakan otorisasi repository yang granular.
+ 7. Jalankan Docker Bench for Security dari sumber resmi yang telah diverifikasi. Pisahkan temuan host, daemon, image, dan runtime.
+ 8. Susun dokumen exception untuk satu CVE yang belum dapat diperbaiki: cantumkan owner, alasan, mitigasi, masa berlaku, dan bukti persetujuan.
++9. Ubah sementara `app-net` menjadi `internal: true`, jalankan ulang aplikasi, dan buktikan bahwa port `8088` tidak lagi dipasang. Rancang kontrol egress pengganti yang tetap memungkinkan port publish.
++10. Ubah mode `secrets/app_secret.txt` menjadi `0600`, buat ulang container aplikasi, lalu jelaskan hasil `verify-hardening.sh` dan `/health`. Mengapa `is_file()` tidak cukup sebagai bukti secret tersedia?
+ 
+ ## Rujukan Utama
+ 
+@@ -942,5 +1031,9 @@ Apabila sertifikat lab tidak lagi digunakan, hapus CA dari trust store Docker se
+ 9. [Trivy — Container image scanning](https://trivy.dev/docs/latest/guide/target/container_image/).
+ 10. [Trivy — Exit code and scanners](https://trivy.dev/docs/latest/guide/configuration/others/).
+ 11. [OWASP Docker Security Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Docker_Security_Cheat_Sheet.html).
++12. [Compose Specification — Services: configs dan secrets](https://compose-spec.github.io/compose-spec/05-services.html).
++13. [Docker Engine API — RegistryServiceConfig (insecure registry default)](https://docs.docker.com/reference/api/engine/version/v1.57/schemas/RegistryServiceConfig/).
++14. [moby/moby #36174 — Container pada network internal tidak dapat mempublikasikan port](https://github.com/moby/moby/issues/36174).
++15. [GHSA-69fq-xp46-6x23 — Trivy ecosystem supply chain compromise](https://github.com/aquasecurity/trivy/security/advisories/GHSA-69fq-xp46-6x23).
+ 
+ Versi scanner, database vulnerability, base image, dan dependency berubah dari waktu ke waktu. Sebelum kelas dimulai, verifikasi tag, simpan digest image, dan jalankan seluruh negative test pada platform yang akan digunakan mahasiswa.
