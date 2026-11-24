@@ -1,0 +1,12 @@
+.git
+.gitignore
+.env
+secrets/
+registry/
+reports/
+scripts/
+compose.yaml
+**/__pycache__/
+**/*.py[cod]
+**/*.log
+**/*.tar

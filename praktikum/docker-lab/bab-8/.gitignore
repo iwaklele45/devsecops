@@ -1,0 +1,9 @@
+.env
+secrets/*.txt
+!secrets/*.txt.example
+registry/auth/*
+registry/certs/*
+reports/*
+!reports/.gitkeep
+*.tar
+*.log

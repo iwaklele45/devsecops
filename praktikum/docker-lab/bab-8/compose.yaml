@@ -1,0 +1,89 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: app/Dockerfile
+    image: ${APP_IMAGE}
+    user: "10001:10001"
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 100
+    cpus: 0.50
+    mem_limit: 256m
+    memswap_limit: 256m
+    secrets:
+      - app_secret
+    ports:
+      - "127.0.0.1:8088:8080"
+    networks:
+      - app-net
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=2)"
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+    restart: unless-stopped
+
+  registry:
+    image: registry:3.1.1
+    environment:
+      REGISTRY_HTTP_ADDR: 0.0.0.0:5000
+      REGISTRY_HTTP_TLS_CERTIFICATE: /certs/domain.crt
+      REGISTRY_HTTP_TLS_KEY: /certs/domain.key
+      REGISTRY_AUTH: htpasswd
+      REGISTRY_AUTH_HTPASSWD_REALM: DevSecOps Registry
+      REGISTRY_AUTH_HTPASSWD_PATH: /auth/htpasswd
+      REGISTRY_STORAGE_DELETE_ENABLED: "false"
+      OTEL_TRACES_EXPORTER: none
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=32m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    ports:
+      - "127.0.0.1:5000:5000"
+    volumes:
+      - registry-data:/var/lib/registry
+      - ./registry/certs:/certs:ro
+      - ./registry/auth:/auth:ro
+    networks:
+      - registry-net
+    restart: unless-stopped
+
+  trivy:
+    image: aquasec/trivy:0.74.0
+    profiles:
+      - tools
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=512m
+    volumes:
+      - .:/workspace:ro
+      - trivy-cache:/root/.cache
+    security_opt:
+      - no-new-privileges:true
+
+secrets:
+  app_secret:
+    file: ./secrets/app_secret.txt
+
+volumes:
+  registry-data:
+  trivy-cache:
+
+networks:
+  app-net:
+  registry-net:
